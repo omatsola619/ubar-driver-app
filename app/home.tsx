@@ -4,7 +4,7 @@ import * as Location from 'expo-location';
 import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function HomeScreen() {
@@ -15,6 +15,9 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
+    let locationSub: Location.LocationSubscription | null = null;
+    let headingSub: Location.LocationSubscription | null = null;
+
     (async () => {
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
@@ -22,11 +25,45 @@ export default function HomeScreen() {
         return;
       }
 
-      let location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
+      locationSub = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: 2000,
+          distanceInterval: 1,
+        },
+        (loc) => {
+          setLocation((prevLoc) => {
+            return {
+              ...loc,
+              coords: {
+                ...loc.coords,
+                heading: loc.coords.heading !== null && loc.coords.heading >= 0
+                  ? loc.coords.heading
+                  : (prevLoc?.coords.heading ?? 0)
+              }
+            };
+          });
+        }
+      );
+
+      headingSub = await Location.watchHeadingAsync((headingObj) => {
+        setLocation((prevLoc) => {
+          if (!prevLoc) return prevLoc;
+          return {
+            ...prevLoc,
+            coords: {
+              ...prevLoc.coords,
+              heading: headingObj.trueHeading >= 0 ? headingObj.trueHeading : headingObj.magHeading,
+            }
+          };
+        });
       });
-      setLocation(location);
     })();
+
+    return () => {
+      if (locationSub) locationSub.remove();
+      if (headingSub) headingSub.remove();
+    };
   }, []);
 
   const centerMap = () => {
@@ -47,8 +84,8 @@ export default function HomeScreen() {
         ref={mapRef}
         style={styles.map}
         provider={PROVIDER_GOOGLE}
-        showsUserLocation={true}
-        followsUserLocation={true}
+        showsUserLocation={false}
+        followsUserLocation={false}
         showsMyLocationButton={false}
         showsCompass={false}
         initialRegion={{
@@ -58,6 +95,31 @@ export default function HomeScreen() {
           longitudeDelta: 0.05,
         }}
       >
+        {location && (
+          <Marker
+            coordinate={{
+              latitude: location.coords.latitude,
+              longitude: location.coords.longitude,
+            }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            flat={true}
+          >
+            <View style={styles.markerWrapper}>
+              <View style={styles.customMarker}>
+                <Ionicons
+                  name="navigate"
+                  size={20}
+                  color="black"
+                  style={{
+                    marginLeft: 0,
+                    marginBottom: 0,
+                    transform: [{ rotate: `${(location.coords.heading || 0) - 45}deg` }]
+                  }}
+                />
+              </View>
+            </View>
+          </Marker>
+        )}
       </MapView>
 
       {/* Top UI Elements */}
@@ -113,11 +175,11 @@ export default function HomeScreen() {
       <BottomSheet
         ref={bottomSheetRef}
         index={0}
-        snapPoints={['12%', '50%']}
+        snapPoints={[100 + (insets.bottom || 20), '50%']}
         handleIndicatorStyle={{ backgroundColor: '#e0e0e0', width: 40 }}
         backgroundStyle={styles.bottomSheetBackground}
       >
-        <BottomSheetView style={styles.bottomSheetContent}>
+        <BottomSheetView style={[styles.bottomSheetContent, { paddingBottom: insets.bottom || 20 }]}>
           <TouchableOpacity>
             <Ionicons name="options-outline" size={28} color="black" />
           </TouchableOpacity>
@@ -138,6 +200,26 @@ const styles = StyleSheet.create({
   },
   map: {
     ...StyleSheet.absoluteFillObject,
+  },
+  markerWrapper: {
+    padding: -8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  customMarker: {
+    width: 33,
+    height: 33,
+    borderRadius: 18,
+    backgroundColor: 'white',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: 'black',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
   },
   topContainer: {
     position: 'absolute',
@@ -270,8 +352,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: 24,
-    paddingTop: 4,
-    alignItems: 'flex-start',
+    paddingTop: 16,
+    alignItems: 'center',
   },
   offlineText: {
     fontSize: 20,

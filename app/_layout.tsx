@@ -9,7 +9,7 @@ import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 
 export const unstable_settings = {
-  anchor: '(tabs)',
+  anchor: 'home',
 };
 
 function RootNavigation() {
@@ -27,7 +27,7 @@ function RootNavigation() {
       router.replace('/login');
     } else if (session && inAuthGroup) {
       // Redirect away from the sign-in page.
-      router.replace('/(tabs)');
+      router.replace('/home');
     }
   }, [session, isLoading, segments]);
 
@@ -44,7 +44,7 @@ function RootNavigation() {
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false }} />
       <Stack.Screen name="signup" options={{ headerShown: false }} />
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="home" options={{ headerShown: false }} />
       <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
     </Stack>
   );
@@ -57,7 +57,7 @@ export default function RootLayout() {
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AuthProvider>
         <RootNavigation />
-        <StatusBar style="auto" />
+        <StatusBar style="dark" />
       </AuthProvider>
     </ThemeProvider>
   );
