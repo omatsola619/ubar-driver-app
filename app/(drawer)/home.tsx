@@ -166,6 +166,8 @@ export default function HomeScreen() {
     let subscription: any = null;
     let driverChannel: any = null;
 
+    console.log('[RIDES] useEffect running — isOnline:', isOnline);
+
     const fetchRides = async () => {
       if (!isOnline || !location) {
         setNearbyRides([]);
@@ -173,14 +175,24 @@ export default function HomeScreen() {
         return;
       }
 
+      console.log('[RIDES] Fetching rides with status=searching...');
+      console.log('[RIDES] Driver location:', location.coords.latitude, location.coords.longitude);
+
       const { data: ridesData, error } = await supabase
         .from('rides')
         .select('*')
         .eq('status', 'searching');
 
       if (error) {
-        console.error('Error fetching rides:', error.message);
+        console.error('[RIDES] Error fetching rides:', error.message);
         return;
+      }
+
+      console.log(`[RIDES] Total "searching" rides from Supabase: ${ridesData?.length ?? 0}`);
+      if (ridesData) {
+        ridesData.forEach((r: any, i: number) => {
+          console.log(`[RIDES] Ride ${i + 1}:`, r.id, '| pickup:', r.pickup_lat, r.pickup_lng, '| status:', r.status);
+        });
       }
 
       if (ridesData && ridesData.length > 0) {
@@ -190,24 +202,38 @@ export default function HomeScreen() {
           destinations
         );
 
-        const filtered = ridesData.map((ride: any, index: number) => ({
+        console.log('[RIDES] Distances from Google API (meters):', distances);
+
+        const withDistances = ridesData.map((ride: any, index: number) => ({
           ...ride,
           distanceInMeters: distances[index],
           distanceText: distances[index] >= 0 ? `${(distances[index] / 1000).toFixed(1)} km` : 'N/A'
-        })).filter((ride: any) => ride.distanceInMeters >= 3000 && ride.distanceInMeters <= 5000);
+        }));
 
-        setNearbyRides(filtered);
-        setIsModalVisible(filtered.length > 0);
+        console.log('[RIDES] All rides with distances:', withDistances.map((r: any) => ({
+          id: r.id,
+          distance: r.distanceText,
+          distanceInMeters: r.distanceInMeters,
+          status: r.status,
+        })));
+
+        // Show rides within 3-5km (if none, show all within 5km so we can confirm visibility)
+        const nearby = withDistances.filter((ride: any) => ride.distanceInMeters >= 0 && ride.distanceInMeters <= 5000);
+
+        console.log(`[RIDES] Rides within 5km: ${nearby.length}`);
+        console.log('[RIDES] Setting isModalVisible to:', nearby.length > 0);
+
+        setNearbyRides(nearby);
+        setIsModalVisible(nearby.length > 0);
       } else {
+        console.log('[RIDES] No searching rides found.');
         setNearbyRides([]);
         setIsModalVisible(false);
       }
     };
 
     if (isOnline && session?.access_token) {
-      // Set auth for private channels
       supabase.realtime.setAuth(session.access_token);
-
       fetchRides();
 
       // Subscribe to driver-specific private channel
@@ -225,12 +251,12 @@ export default function HomeScreen() {
         .on(
           'postgres_changes' as any,
           { event: '*', table: 'rides' as any, schema: 'public' },
-          () => {
-            fetchRides();
-          }
+          () => { fetchRides(); }
         )
         .subscribe();
     } else {
+      // Driver is offline — clear rides and stop listening
+      console.log('[RIDES] Driver offline — clearing rides and unsubscribing.');
       setNearbyRides([]);
       setIsModalVisible(false);
     }
@@ -240,6 +266,16 @@ export default function HomeScreen() {
       if (driverChannel) supabase.removeChannel(driverChannel);
     };
   }, [isOnline, location?.coords.latitude, location?.coords.longitude, session?.access_token]);
+
+
+  // Collapse bottom sheet when ride cards are showing, restore when gone
+  useEffect(() => {
+    if (nearbyRides.length > 0 && isModalVisible) {
+      bottomSheetRef.current?.collapse();
+    } else {
+      bottomSheetRef.current?.snapToIndex(0);
+    }
+  }, [nearbyRides.length, isModalVisible]);
 
   const centerMap = () => {
     if (location && mapRef.current) {
@@ -373,6 +409,7 @@ export default function HomeScreen() {
         ref={bottomSheetRef}
         index={0}
         snapPoints={[isOnline ? (300 + (insets.bottom || 20)) : (100 + (insets.bottom || 20)), '50%']}
+        enableDynamicSizing={false}
         handleIndicatorStyle={{ backgroundColor: '#e0e0e0', width: 40 }}
         backgroundStyle={styles.bottomSheetBackground}
         animatedPosition={animatedPosition}
@@ -435,43 +472,79 @@ export default function HomeScreen() {
         </BottomSheetView>
       </BottomSheet>
 
-      {/* Nearby Rides Modal */}
+      {/* Nearby Ride Request Cards */}
       {isOnline && nearbyRides.length > 0 && isModalVisible && (
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Nearby Rides (3-5km)</Text>
-              <TouchableOpacity onPress={() => setIsModalVisible(false)}>
-                <Ionicons name="close" size={24} color="black" />
-              </TouchableOpacity>
-            </View>
-            <Animated.FlatList
-              data={nearbyRides}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={styles.rideList}
-              renderItem={({ item }) => (
-                <View style={styles.rideItem}>
-                  <View style={styles.rideInfo}>
-                    <View style={styles.locationRow}>
-                      <View style={[styles.dot, { backgroundColor: '#4ade80' }]} />
-                      <Text style={styles.addressText} numberOfLines={1}>{item.pickup_address || `${item.pickup_lat.toFixed(4)}, ${item.pickup_lng.toFixed(4)}`}</Text>
+          <Animated.FlatList
+            data={nearbyRides}
+            keyExtractor={(item) => item.id}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item }) => (
+              <View style={styles.rideCard}>
+                {/* Card Header: ride type + close */}
+                <View style={styles.rideCardHeader}>
+                  <View style={styles.rideTypeRow}>
+                    <View style={styles.rideTypeBadge}>
+                      <Ionicons name="person" size={14} color="white" />
+                      <Text style={styles.rideTypeText}>UberX</Text>
                     </View>
-                    <View style={styles.connector} />
-                    <View style={styles.locationRow}>
-                      <View style={[styles.dot, { backgroundColor: '#ef4444' }]} />
-                      <Text style={styles.addressText} numberOfLines={1}>{item.dropoff_address || `${item.dropoff_lat.toFixed(4)}, ${item.dropoff_lng.toFixed(4)}`}</Text>
-                    </View>
+                    <Text style={styles.exclusiveLabel}>Exclusive</Text>
                   </View>
-                  <View style={styles.rideStats}>
-                    <Text style={styles.distanceBadge}>{item.distanceText}</Text>
-                    <TouchableOpacity style={styles.acceptButton}>
-                      <Text style={styles.acceptText}>View</Text>
-                    </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setIsModalVisible(false)}>
+                    <Ionicons name="close" size={22} color="#333" />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Fare */}
+                <Text style={styles.fareText}>
+                  {item.fare ? `$${Number(item.fare).toFixed(2)}` : 'Calculating...'}
+                </Text>
+
+                {/* Rating */}
+                <View style={styles.ratingRow}>
+                  <Ionicons name="star" size={14} color="#f59e0b" />
+                  <Text style={styles.ratingText}>{item.rating ?? '4.80'}</Text>
+                </View>
+
+                {/* Divider */}
+                <View style={styles.divider} />
+
+                {/* Pickup row */}
+                <View style={styles.tripRow}>
+                  <View style={styles.tripDotWrapper}>
+                    <View style={styles.tripDotFilled} />
+                    <View style={styles.tripLine} />
+                  </View>
+                  <View style={styles.tripTextWrapper}>
+                    <Text style={styles.tripMeta}>{item.distanceText} away</Text>
+                    <Text style={styles.tripAddress} numberOfLines={1}>
+                      {item.pickup_address || `${item.pickup_lat?.toFixed(4)}, ${item.pickup_lng?.toFixed(4)}`}
+                    </Text>
                   </View>
                 </View>
-              )}
-            />
-          </View>
+
+                {/* Dropoff row */}
+                <View style={styles.tripRow}>
+                  <View style={styles.tripDotWrapper}>
+                    <View style={styles.tripDotSquare} />
+                  </View>
+                  <View style={styles.tripTextWrapper}>
+                    <Text style={styles.tripMeta}>
+                      {item.duration ? `${item.duration} trip` : 'Trip'}
+                    </Text>
+                    <Text style={styles.tripAddress} numberOfLines={1}>
+                      {item.dropoff_address || `${item.dropoff_lat?.toFixed(4)}, ${item.dropoff_lng?.toFixed(4)}`}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Accept Button */}
+                <TouchableOpacity style={styles.acceptButton}>
+                  <Text style={styles.acceptText}>Accept</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          />
         </View>
       )}
     </GestureHandlerRootView>
@@ -727,92 +800,133 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     position: 'absolute',
-    top: 100,
-    left: 20,
-    right: 20,
-    maxHeight: '40%',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    maxHeight: '55%',
+    zIndex: 200,
+    paddingHorizontal: 0,
+    paddingBottom: 20,
+  },
+  rideCard: {
     backgroundColor: 'white',
+    marginHorizontal: 12,
+    marginBottom: 10,
     borderRadius: 16,
-    zIndex: 100,
+    padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  modalContent: {
-    padding: 16,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  rideList: {
-    paddingBottom: 8,
-  },
-  rideItem: {
-    flexDirection: 'row',
-    backgroundColor: '#f9f9f9',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 10,
     borderWidth: 1,
-    borderColor: '#eee',
+    borderColor: '#f0f0f0',
   },
-  rideInfo: {
-    flex: 1,
+  rideCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
   },
-  locationRow: {
+  rideTypeRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
   },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 10,
-  },
-  connector: {
-    width: 2,
-    height: 10,
-    backgroundColor: '#eee',
-    marginLeft: 3,
-    marginVertical: 2,
-  },
-  addressText: {
-    fontSize: 14,
-    color: '#444',
-  },
-  rideStats: {
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    marginLeft: 12,
-  },
-  distanceBadge: {
-    backgroundColor: '#e0f2fe',
-    color: '#0369a1',
+  rideTypeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#000',
+    borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 6,
-    fontSize: 12,
+    gap: 4,
+  },
+  rideTypeText: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  exclusiveLabel: {
+    color: '#3b82f6',
+    fontSize: 14,
     fontWeight: '600',
   },
+  fareText: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#111',
+    marginBottom: 4,
+  },
+  ratingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 14,
+  },
+  ratingText: {
+    fontSize: 14,
+    color: '#555',
+    fontWeight: '500',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#e5e7eb',
+    marginBottom: 14,
+  },
+  tripRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  tripDotWrapper: {
+    alignItems: 'center',
+    width: 16,
+    marginRight: 12,
+    paddingTop: 3,
+  },
+  tripDotFilled: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#111',
+  },
+  tripLine: {
+    width: 2,
+    flex: 1,
+    backgroundColor: '#ccc',
+    marginTop: 3,
+    minHeight: 20,
+  },
+  tripDotSquare: {
+    width: 10,
+    height: 10,
+    borderRadius: 2,
+    backgroundColor: '#111',
+  },
+  tripTextWrapper: {
+    flex: 1,
+  },
+  tripMeta: {
+    fontSize: 12,
+    color: '#888',
+    marginBottom: 2,
+  },
+  tripAddress: {
+    fontSize: 14,
+    color: '#222',
+    fontWeight: '500',
+  },
   acceptButton: {
-    backgroundColor: 'black',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
+    backgroundColor: '#3b82f6',
+    borderRadius: 10,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: 6,
   },
   acceptText: {
     color: 'white',
-    fontSize: 12,
+    fontSize: 17,
     fontWeight: 'bold',
   },
   rideMarker: {
