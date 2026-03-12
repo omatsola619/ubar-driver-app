@@ -3,9 +3,10 @@ import BottomSheet, { BottomSheetView } from '@gorhom/bottom-sheet';
 import { DrawerActions, useNavigation } from '@react-navigation/native';
 import * as Location from 'expo-location';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/context/AuthContext';
@@ -21,6 +22,17 @@ export default function HomeScreen() {
   const bottomSheetRef = useRef<BottomSheet>(null);
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const animatedPosition = useSharedValue(0);
+  const screenHeight = Dimensions.get('window').height;
+
+  const animatedButtonStyle = useAnimatedStyle(() => {
+    // animatedPosition is the position from the top of the screen
+    // We want to calculate the offset from the bottom
+    const marginBottom = Math.max(0, screenHeight - animatedPosition.value - 20);
+    return {
+      bottom: marginBottom + 140, // 140 is the original bottom offset
+    };
+  });
 
   useEffect(() => {
     let locationSub: Location.LocationSubscription | null = null;
@@ -196,44 +208,49 @@ export default function HomeScreen() {
       </View>
 
       {/* Center Left UI Element */}
-      <View style={styles.leftContainer}>
+      <Animated.View style={[styles.leftContainer, animatedButtonStyle]}>
         <TouchableOpacity style={styles.roundButton}>
           <Ionicons name="shield-checkmark" size={24} color="#0052cc" />
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
       {/* Center Right UI Elements */}
-      <View style={styles.rightContainer}>
+      <Animated.View style={[styles.rightContainer, animatedButtonStyle]}>
         <TouchableOpacity style={[styles.roundButton, styles.stackButton]} onPress={centerMap}>
           <MaterialIcons name="my-location" size={24} color="black" />
         </TouchableOpacity>
         <TouchableOpacity style={styles.roundButton}>
           <Ionicons name="stats-chart" size={20} color="black" />
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
-      {/* GO Button */}
-      <View style={styles.goButtonContainer}>
-        <TouchableOpacity onPress={toggleOnline} disabled={loading}>
-          <View style={[styles.goButtonOuter, isOnline && styles.stopButtonOuter]}>
-            <View style={[styles.goButtonInner, isOnline && styles.stopButtonInner]}>
-              {loading ? (
-                <ActivityIndicator color="white" size="large" />
-              ) : (
-                <Text style={styles.goButtonText}>{isOnline ? 'STOP' : 'GO'}</Text>
-              )}
+      {/* GO Button (Only when offline) */}
+      {!isOnline && (
+        <View style={styles.goButtonContainer}>
+          <TouchableOpacity onPress={toggleOnline} disabled={loading}>
+            <View style={styles.goButtonOuter}>
+              <View style={styles.goButtonInner}>
+                {loading ? (
+                  <ActivityIndicator color="white" size="large" />
+                ) : (
+                  <Text style={styles.goButtonText}>GO</Text>
+                )}
+              </View>
             </View>
-          </View>
-        </TouchableOpacity>
-      </View>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Bottom Sheet */}
       <BottomSheet
         ref={bottomSheetRef}
         index={0}
-        snapPoints={[isOnline ? (220 + (insets.bottom || 20)) : (100 + (insets.bottom || 20)), '50%']}
+        snapPoints={[isOnline ? (300 + (insets.bottom || 20)) : (100 + (insets.bottom || 20)), '50%']}
         handleIndicatorStyle={{ backgroundColor: '#e0e0e0', width: 40 }}
         backgroundStyle={styles.bottomSheetBackground}
+        animatedPosition={animatedPosition}
+        enableHandlePanningGesture={isOnline}
+        enableContentPanningGesture={isOnline}
       >
         <BottomSheetView style={[styles.bottomSheetContent, { paddingBottom: insets.bottom || 20 }]}>
           <View style={styles.sheetHeader}>
@@ -274,6 +291,18 @@ export default function HomeScreen() {
                   <Ionicons name="speedometer-outline" size={12} color="#666" />
                 </View>
               </View>
+
+              <TouchableOpacity
+                style={[styles.stopButton, loading && { opacity: 0.7 }]}
+                onPress={toggleOnline}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="white" size="small" />
+                ) : (
+                  <Text style={styles.stopButtonText}>STOP</Text>
+                )}
+              </TouchableOpacity>
             </View>
           )}
         </BottomSheetView>
@@ -515,5 +544,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginRight: 4,
+  },
+  stopButton: {
+    backgroundColor: '#000',
+    marginTop: 20,
+    paddingVertical: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stopButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
 });
