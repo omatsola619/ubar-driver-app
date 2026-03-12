@@ -1,107 +1,281 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
-
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { supabase } from '@/lib/supabase';
-import { Link } from 'expo-router';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import BottomSheet, { BottomSheetView } from '@gorhom/bottom-sheet';
+import * as Location from 'expo-location';
+import React, { useEffect, useRef, useState } from 'react';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome Driver!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView>
-        <ThemedText
-          style={{ color: 'red', marginTop: 10, padding: 10 }}
-          onPress={() => supabase.auth.signOut()}
-        >
-          Sign Out
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const [location, setLocation] = useState<Location.LocationObject | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const mapRef = useRef<MapView>(null);
+  const bottomSheetRef = useRef<BottomSheet>(null);
+  const insets = useSafeAreaInsets();
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  useEffect(() => {
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setErrorMsg('Permission to access location was denied');
+        return;
+      }
+
+      let location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setLocation(location);
+    })();
+  }, []);
+
+  const centerMap = () => {
+    if (location && mapRef.current) {
+      mapRef.current.animateToRegion({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      });
+    }
+  };
+
+  return (
+    <GestureHandlerRootView style={styles.container}>
+      {/* Map */}
+      <MapView
+        ref={mapRef}
+        style={styles.map}
+        provider={PROVIDER_GOOGLE}
+        showsUserLocation={true}
+        followsUserLocation={true}
+        showsMyLocationButton={false}
+        showsCompass={false}
+        initialRegion={{
+          latitude: location ? location.coords.latitude : 44.9190,
+          longitude: location ? location.coords.longitude : -93.2922,
+          latitudeDelta: 0.05,
+          longitudeDelta: 0.05,
+        }}
+      >
+      </MapView>
+
+      {/* Top UI Elements */}
+      <View style={[styles.topContainer, { top: insets.top > 0 ? insets.top + 10 : 40 }]}>
+        <View style={styles.menuContainer}>
+          <TouchableOpacity style={styles.roundButton}>
+            <Ionicons name="menu" size={24} color="black" />
+          </TouchableOpacity>
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>57</Text>
+          </View>
+        </View>
+
+        <TouchableOpacity style={styles.earningsPill}>
+          <Text style={styles.currency}>$</Text>
+          <Text style={styles.earningsText}>93.66</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.roundButton}>
+          <Ionicons name="search" size={24} color="black" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Center Left UI Element */}
+      <View style={styles.leftContainer}>
+        <TouchableOpacity style={styles.roundButton}>
+          <Ionicons name="shield-checkmark" size={24} color="#0052cc" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Center Right UI Elements */}
+      <View style={styles.rightContainer}>
+        <TouchableOpacity style={[styles.roundButton, styles.stackButton]} onPress={centerMap}>
+          <MaterialIcons name="my-location" size={24} color="black" />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.roundButton}>
+          <Ionicons name="stats-chart" size={20} color="black" />
+        </TouchableOpacity>
+      </View>
+
+      {/* GO Button */}
+      <View style={styles.goButtonContainer}>
+        <TouchableOpacity>
+          <View style={styles.goButtonOuter}>
+            <View style={styles.goButtonInner}>
+              <Text style={styles.goButtonText}>GO</Text>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </View>
+
+      {/* Bottom Sheet */}
+      <BottomSheet
+        ref={bottomSheetRef}
+        index={0}
+        snapPoints={['12%', '50%']}
+        handleIndicatorStyle={{ backgroundColor: '#e0e0e0', width: 40 }}
+        backgroundStyle={styles.bottomSheetBackground}
+      >
+        <BottomSheetView style={styles.bottomSheetContent}>
+          <TouchableOpacity>
+            <Ionicons name="options-outline" size={28} color="black" />
+          </TouchableOpacity>
+          <Text style={styles.offlineText}>You're offline</Text>
+          <TouchableOpacity>
+            <Ionicons name="list-outline" size={28} color="black" />
+          </TouchableOpacity>
+        </BottomSheetView>
+      </BottomSheet>
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  map: {
+    ...StyleSheet.absoluteFillObject,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
+  topContainer: {
     position: 'absolute',
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  menuContainer: {
+    position: 'relative',
+  },
+  badge: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    backgroundColor: '#3b82f6',
+    borderRadius: 14,
+    minWidth: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'white',
+    paddingHorizontal: 4,
+    zIndex: 2,
+  },
+  badgeText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  roundButton: {
+    width: 52,
+    height: 52,
+    backgroundColor: 'white',
+    borderRadius: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  stackButton: {
+    marginBottom: 16,
+  },
+  earningsPill: {
+    flexDirection: 'row',
+    backgroundColor: 'black',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 30,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  currency: {
+    color: '#4ade80',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginRight: 2,
+  },
+  earningsText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  leftContainer: {
+    position: 'absolute',
+    bottom: 140,
+    left: 16,
+    zIndex: 10,
+  },
+  rightContainer: {
+    position: 'absolute',
+    bottom: 140,
+    right: 16,
+    zIndex: 10,
+  },
+  goButtonContainer: {
+    position: 'absolute',
+    bottom: 120,
+    alignSelf: 'center',
+    zIndex: 10,
+  },
+  goButtonOuter: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    backgroundColor: 'rgba(59, 130, 246, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(59, 130, 246, 0.6)',
+  },
+  goButtonInner: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    backgroundColor: '#3b82f6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  goButtonText: {
+    color: 'white',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  bottomSheetBackground: {
+    borderRadius: 0,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 10,
+  },
+  bottomSheetContent: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingTop: 4,
+    alignItems: 'flex-start',
+  },
+  offlineText: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#1f2937',
   },
 });
