@@ -9,7 +9,7 @@ import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 
 export const unstable_settings = {
-  anchor: 'home',
+  anchor: '(drawer)',
 };
 
 function RootNavigation() {
@@ -27,7 +27,7 @@ function RootNavigation() {
       router.replace('/login');
     } else if (session && inAuthGroup) {
       // Redirect away from the sign-in page.
-      router.replace('/home');
+      router.replace('/(drawer)/home');
     }
   }, [session, isLoading, segments]);
 
@@ -44,7 +44,7 @@ function RootNavigation() {
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false }} />
       <Stack.Screen name="signup" options={{ headerShown: false }} />
-      <Stack.Screen name="home" options={{ headerShown: false }} />
+      <Stack.Screen name="(drawer)" options={{ headerShown: false }} />
       <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
     </Stack>
   );

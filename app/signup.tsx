@@ -6,13 +6,14 @@ import { supabase } from '../lib/supabase';
 
 export default function SignupScreen() {
     const router = useRouter();
+    const [name, setName] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
 
     const handleSignup = async () => {
-        if (!email || !password) {
-            Alert.alert('Error', 'Please enter both email and password.');
+        if (!name || !email || !password) {
+            Alert.alert('Error', 'Please enter your name, email and password.');
             return;
         }
 
@@ -22,6 +23,7 @@ export default function SignupScreen() {
             password,
             options: {
                 data: {
+                    name,
                     user_type: 'driver'
                 }
             }
@@ -64,6 +66,14 @@ export default function SignupScreen() {
 
                     {/* Inputs */}
                     <View style={styles.inputContainer}>
+                        <TextInput
+                            style={styles.input}
+                            placeholder="Full Name"
+                            placeholderTextColor="#999"
+                            autoCapitalize="words"
+                            value={name}
+                            onChangeText={setName}
+                        />
                         <TextInput
                             style={styles.input}
                             placeholder="name@example.com"

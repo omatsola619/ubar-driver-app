@@ -1,18 +1,26 @@
-import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import BottomSheet, { BottomSheetView } from '@gorhom/bottom-sheet';
+import { DrawerActions, useNavigation } from '@react-navigation/native';
 import * as Location from 'expo-location';
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useAuth } from '@/context/AuthContext';
+import { supabase } from '@/lib/supabase';
+
 export default function HomeScreen() {
+  const { user } = useAuth();
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
+  const [isOnline, setIsOnline] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const mapRef = useRef<MapView>(null);
   const bottomSheetRef = useRef<BottomSheet>(null);
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
 
   useEffect(() => {
     let locationSub: Location.LocationSubscription | null = null;
@@ -65,6 +73,50 @@ export default function HomeScreen() {
       if (headingSub) headingSub.remove();
     };
   }, []);
+
+  // Update Supabase with driver's current position and status
+  const updateDriverStatus = async (online: boolean) => {
+    if (!user || !location) return;
+
+    const payload = {
+      user_id: user.id,
+      lat: location.coords.latitude,
+      lng: location.coords.longitude,
+      is_available: online,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from('drivers')
+      .upsert(payload, { onConflict: 'user_id' });
+
+    if (error) {
+      console.error('Error updating driver status:', error.message);
+    }
+  };
+
+  const toggleOnline = async () => {
+    setLoading(true);
+    const nextStatus = !isOnline;
+    await updateDriverStatus(nextStatus);
+    setIsOnline(nextStatus);
+    setLoading(false);
+  };
+
+  // Heartbeat location updates every 5 seconds when online
+  useEffect(() => {
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    if (isOnline) {
+      intervalId = setInterval(async () => {
+        await updateDriverStatus(true);
+      }, 5000);
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [isOnline, location, user]);
 
   const centerMap = () => {
     if (location && mapRef.current) {
@@ -125,7 +177,7 @@ export default function HomeScreen() {
       {/* Top UI Elements */}
       <View style={[styles.topContainer, { top: insets.top > 0 ? insets.top + 10 : 40 }]}>
         <View style={styles.menuContainer}>
-          <TouchableOpacity style={styles.roundButton}>
+          <TouchableOpacity style={styles.roundButton} onPress={() => navigation.dispatch(DrawerActions.openDrawer())}>
             <Ionicons name="menu" size={24} color="black" />
           </TouchableOpacity>
           <View style={styles.badge}>
@@ -162,10 +214,14 @@ export default function HomeScreen() {
 
       {/* GO Button */}
       <View style={styles.goButtonContainer}>
-        <TouchableOpacity>
-          <View style={styles.goButtonOuter}>
-            <View style={styles.goButtonInner}>
-              <Text style={styles.goButtonText}>GO</Text>
+        <TouchableOpacity onPress={toggleOnline} disabled={loading}>
+          <View style={[styles.goButtonOuter, isOnline && styles.stopButtonOuter]}>
+            <View style={[styles.goButtonInner, isOnline && styles.stopButtonInner]}>
+              {loading ? (
+                <ActivityIndicator color="white" size="large" />
+              ) : (
+                <Text style={styles.goButtonText}>{isOnline ? 'STOP' : 'GO'}</Text>
+              )}
             </View>
           </View>
         </TouchableOpacity>
@@ -175,18 +231,51 @@ export default function HomeScreen() {
       <BottomSheet
         ref={bottomSheetRef}
         index={0}
-        snapPoints={[100 + (insets.bottom || 20), '50%']}
+        snapPoints={[isOnline ? (220 + (insets.bottom || 20)) : (100 + (insets.bottom || 20)), '50%']}
         handleIndicatorStyle={{ backgroundColor: '#e0e0e0', width: 40 }}
         backgroundStyle={styles.bottomSheetBackground}
       >
         <BottomSheetView style={[styles.bottomSheetContent, { paddingBottom: insets.bottom || 20 }]}>
-          <TouchableOpacity>
-            <Ionicons name="options-outline" size={28} color="black" />
-          </TouchableOpacity>
-          <Text style={styles.offlineText}>You're offline</Text>
-          <TouchableOpacity>
-            <Ionicons name="list-outline" size={28} color="black" />
-          </TouchableOpacity>
+          <View style={styles.sheetHeader}>
+            <TouchableOpacity>
+              <Ionicons name="options-outline" size={28} color="black" />
+            </TouchableOpacity>
+            <Text style={styles.offlineText}>{isOnline ? "You're online" : "You're offline"}</Text>
+            <TouchableOpacity>
+              <Ionicons name="list-outline" size={28} color="black" />
+            </TouchableOpacity>
+          </View>
+
+          {isOnline && (
+            <View style={styles.onlineStatsContainer}>
+              <View style={styles.statsRow}>
+                <View style={styles.leftStats}>
+                  <View style={styles.statusDot} />
+                  <Text style={styles.statsTitle}>Unlock Gold</Text>
+                </View>
+                <View style={styles.rightStats}>
+                  <MaterialCommunityIcons
+                    name="diamond"
+                    size={22}
+                    color="#3b82f6"
+                    style={styles.statsIcon}
+                  />
+                  <Text style={styles.pointsText}>185 / 300 pts</Text>
+                </View>
+              </View>
+
+              <View style={styles.progressSection}>
+                <View style={styles.statDetail}>
+                  <Text style={styles.statPercent}>71%</Text>
+                  <Ionicons name="person" size={12} color="#666" />
+                </View>
+                <View style={styles.statDetail}>
+                  <Text style={styles.statPercent}>2%</Text>
+                  <Ionicons name="speedometer-outline" size={12} color="#666" />
+                </View>
+              </View>
+            </View>
+          )}
         </BottomSheetView>
       </BottomSheet>
     </GestureHandlerRootView>
@@ -334,6 +423,14 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 8,
   },
+  stopButtonOuter: {
+    backgroundColor: 'rgba(239, 68, 68, 0.4)',
+    borderColor: 'rgba(239, 68, 68, 0.6)',
+  },
+  stopButtonInner: {
+    backgroundColor: '#ef4444',
+    shadowColor: '#ef4444',
+  },
   goButtonText: {
     color: 'white',
     fontSize: 24,
@@ -349,15 +446,74 @@ const styles = StyleSheet.create({
   },
   bottomSheetContent: {
     flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     paddingHorizontal: 24,
     paddingTop: 16,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 24,
   },
   offlineText: {
     fontSize: 20,
     fontWeight: '600',
     color: '#1f2937',
+  },
+  onlineStatsContainer: {
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+    paddingTop: 20,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  leftStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statusDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#ef4444',
+    marginRight: 10,
+  },
+  statsTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#000',
+  },
+  rightStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statsIcon: {
+    width: 20,
+    height: 20,
+    marginRight: 6,
+    resizeMode: 'contain',
+  },
+  pointsText: {
+    fontSize: 16,
+    color: '#444',
+    fontWeight: '500',
+  },
+  progressSection: {
+    flexDirection: 'row',
+    paddingLeft: 24,
+  },
+  statDetail: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 20,
+  },
+  statPercent: {
+    fontSize: 14,
+    color: '#666',
+    marginRight: 4,
   },
 });
