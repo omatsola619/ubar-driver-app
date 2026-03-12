@@ -10,14 +10,17 @@ import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanima
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/context/AuthContext';
+import { getDistances } from '@/lib/google-maps';
 import { supabase } from '@/lib/supabase';
 
 export default function HomeScreen() {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [isOnline, setIsOnline] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [nearbyRides, setNearbyRides] = useState<any[]>([]);
+  const [isModalVisible, setIsModalVisible] = useState(false);
   const mapRef = useRef<MapView>(null);
   const bottomSheetRef = useRef<BottomSheet>(null);
   const insets = useSafeAreaInsets();
@@ -86,6 +89,25 @@ export default function HomeScreen() {
     };
   }, []);
 
+  // Fetch initial driver status on mount
+  useEffect(() => {
+    const fetchInitialStatus = async () => {
+      if (!user) return;
+
+      const { data, error } = await supabase
+        .from('drivers')
+        .select('is_available')
+        .eq('user_id', user.id);
+
+      if (error) {
+        console.error('Error fetching driver status:', error.message);
+      } else if (data && data.length > 0) {
+        setIsOnline(data[0].is_available);
+      }
+    };
+    fetchInitialStatus();
+  }, [user]);
+
   // Update Supabase with driver's current position and status
   const updateDriverStatus = async (online: boolean) => {
     if (!user || !location) return;
@@ -98,12 +120,21 @@ export default function HomeScreen() {
       updated_at: new Date().toISOString(),
     };
 
-    const { error } = await supabase
+    // Try to insert first (new driver). If row already exists, update it.
+    const { error: insertError } = await supabase
       .from('drivers')
-      .upsert(payload, { onConflict: 'user_id' });
+      .insert(payload);
 
-    if (error) {
-      console.error('Error updating driver status:', error.message);
+    if (insertError) {
+      // Row already exists — update instead
+      const { error: updateError } = await supabase
+        .from('drivers')
+        .update(payload)
+        .eq('user_id', user.id);
+
+      if (updateError) {
+        console.error('Error updating driver status:', updateError.message);
+      }
     }
   };
 
@@ -129,6 +160,86 @@ export default function HomeScreen() {
       if (intervalId) clearInterval(intervalId);
     };
   }, [isOnline, location, user]);
+
+  // Fetch and filter rides when online
+  useEffect(() => {
+    let subscription: any = null;
+    let driverChannel: any = null;
+
+    const fetchRides = async () => {
+      if (!isOnline || !location) {
+        setNearbyRides([]);
+        setIsModalVisible(false);
+        return;
+      }
+
+      const { data: ridesData, error } = await supabase
+        .from('rides')
+        .select('*')
+        .eq('status', 'searching');
+
+      if (error) {
+        console.error('Error fetching rides:', error.message);
+        return;
+      }
+
+      if (ridesData && ridesData.length > 0) {
+        const destinations = ridesData.map((r: any) => ({ lat: r.pickup_lat, lng: r.pickup_lng }));
+        const distances = await getDistances(
+          { lat: location.coords.latitude, lng: location.coords.longitude },
+          destinations
+        );
+
+        const filtered = ridesData.map((ride: any, index: number) => ({
+          ...ride,
+          distanceInMeters: distances[index],
+          distanceText: distances[index] >= 0 ? `${(distances[index] / 1000).toFixed(1)} km` : 'N/A'
+        })).filter((ride: any) => ride.distanceInMeters >= 3000 && ride.distanceInMeters <= 5000);
+
+        setNearbyRides(filtered);
+        setIsModalVisible(filtered.length > 0);
+      } else {
+        setNearbyRides([]);
+        setIsModalVisible(false);
+      }
+    };
+
+    if (isOnline && session?.access_token) {
+      // Set auth for private channels
+      supabase.realtime.setAuth(session.access_token);
+
+      fetchRides();
+
+      // Subscribe to driver-specific private channel
+      driverChannel = supabase
+        .channel(`topic:drivers:${user?.id}`)
+        .on('broadcast', { event: 'new-ride' }, (payload) => {
+          console.log('Received new ride broadcast:', payload);
+          fetchRides();
+        })
+        .subscribe();
+
+      // Real-time subscription to ride table changes
+      subscription = supabase
+        .channel('rides-channel')
+        .on(
+          'postgres_changes' as any,
+          { event: '*', table: 'rides' as any, schema: 'public' },
+          () => {
+            fetchRides();
+          }
+        )
+        .subscribe();
+    } else {
+      setNearbyRides([]);
+      setIsModalVisible(false);
+    }
+
+    return () => {
+      if (subscription) supabase.removeChannel(subscription);
+      if (driverChannel) supabase.removeChannel(driverChannel);
+    };
+  }, [isOnline, location?.coords.latitude, location?.coords.longitude, session?.access_token]);
 
   const centerMap = () => {
     if (location && mapRef.current) {
@@ -184,6 +295,22 @@ export default function HomeScreen() {
             </View>
           </Marker>
         )}
+
+        {nearbyRides.map((ride) => (
+          <Marker
+            key={ride.id}
+            coordinate={{
+              latitude: ride.pickup_lat,
+              longitude: ride.pickup_lng,
+            }}
+            title="Pickup"
+            description={ride.pickup_address}
+          >
+            <View style={styles.rideMarker}>
+              <MaterialCommunityIcons name="car-connected" size={24} color="white" />
+            </View>
+          </Marker>
+        ))}
       </MapView>
 
       {/* Top UI Elements */}
@@ -307,6 +434,46 @@ export default function HomeScreen() {
           )}
         </BottomSheetView>
       </BottomSheet>
+
+      {/* Nearby Rides Modal */}
+      {isOnline && nearbyRides.length > 0 && isModalVisible && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Nearby Rides (3-5km)</Text>
+              <TouchableOpacity onPress={() => setIsModalVisible(false)}>
+                <Ionicons name="close" size={24} color="black" />
+              </TouchableOpacity>
+            </View>
+            <Animated.FlatList
+              data={nearbyRides}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.rideList}
+              renderItem={({ item }) => (
+                <View style={styles.rideItem}>
+                  <View style={styles.rideInfo}>
+                    <View style={styles.locationRow}>
+                      <View style={[styles.dot, { backgroundColor: '#4ade80' }]} />
+                      <Text style={styles.addressText} numberOfLines={1}>{item.pickup_address || `${item.pickup_lat.toFixed(4)}, ${item.pickup_lng.toFixed(4)}`}</Text>
+                    </View>
+                    <View style={styles.connector} />
+                    <View style={styles.locationRow}>
+                      <View style={[styles.dot, { backgroundColor: '#ef4444' }]} />
+                      <Text style={styles.addressText} numberOfLines={1}>{item.dropoff_address || `${item.dropoff_lat.toFixed(4)}, ${item.dropoff_lng.toFixed(4)}`}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.rideStats}>
+                    <Text style={styles.distanceBadge}>{item.distanceText}</Text>
+                    <TouchableOpacity style={styles.acceptButton}>
+                      <Text style={styles.acceptText}>View</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            />
+          </View>
+        </View>
+      )}
     </GestureHandlerRootView>
   );
 }
@@ -557,5 +724,107 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  modalOverlay: {
+    position: 'absolute',
+    top: 100,
+    left: 20,
+    right: 20,
+    maxHeight: '40%',
+    backgroundColor: 'white',
+    borderRadius: 16,
+    zIndex: 100,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  modalContent: {
+    padding: 16,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  rideList: {
+    paddingBottom: 8,
+  },
+  rideItem: {
+    flexDirection: 'row',
+    backgroundColor: '#f9f9f9',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#eee',
+  },
+  rideInfo: {
+    flex: 1,
+  },
+  locationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 10,
+  },
+  connector: {
+    width: 2,
+    height: 10,
+    backgroundColor: '#eee',
+    marginLeft: 3,
+    marginVertical: 2,
+  },
+  addressText: {
+    fontSize: 14,
+    color: '#444',
+  },
+  rideStats: {
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    marginLeft: 12,
+  },
+  distanceBadge: {
+    backgroundColor: '#e0f2fe',
+    color: '#0369a1',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  acceptButton: {
+    backgroundColor: 'black',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  acceptText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  rideMarker: {
+    backgroundColor: '#3b82f6',
+    padding: 6,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: 'white',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
   },
 });
