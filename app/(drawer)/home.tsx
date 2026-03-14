@@ -42,6 +42,7 @@ export default function HomeScreen() {
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [acceptingRideId, setAcceptingRideId] = useState<string | null>(null);
   const [decliningRideId, setDecliningRideId] = useState<string | null>(null);
+  const [driverId, setDriverId] = useState<string | null>(null);
 
   // Accepted ride state
   const [acceptedRide, setAcceptedRide] = useState<AcceptedRide | null>(null);
@@ -125,13 +126,15 @@ export default function HomeScreen() {
 
       const { data, error } = await supabase
         .from('drivers')
-        .select('is_available')
+        .select('*')
         .eq('user_id', user.id);
 
       if (error) {
         console.error('Error fetching driver status:', error.message);
       } else if (data && data.length > 0) {
+        console.log('[DEBUG] Driver data fetched:', data[0]);
         setIsOnline(data[0].is_available);
+        setDriverId(data[0].id); // This is the UUID/ID from the drivers table
       }
     };
     fetchInitialStatus();
@@ -153,13 +156,27 @@ export default function HomeScreen() {
       .insert(payload);
 
     if (insertError) {
-      const { error: updateError } = await supabase
+      const { data, error: updateError } = await supabase
         .from('drivers')
         .update(payload)
-        .eq('user_id', user.id);
+        .eq('user_id', user.id)
+        .select();
 
       if (updateError) {
         console.error('Error updating driver status:', updateError.message);
+      } else if (data && data.length > 0) {
+        setDriverId(data[0].id);
+      }
+    } else {
+      // Row inserted successfully
+      const { data, error: selectError } = await supabase
+        .from('drivers')
+        .select('id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (!selectError && data) {
+        setDriverId(data.id);
       }
     }
   };
@@ -395,6 +412,8 @@ export default function HomeScreen() {
 
   // Handle declining a ride → set status to 'cancelled'
   const handleDeclineRide = async (rideId: string) => {
+    console.log('--- DECLINE BUTTON CLICKED ---');
+    console.log('RIDE ID:', rideId);
     setDecliningRideId(rideId);
     try {
       await supabase
@@ -417,22 +436,44 @@ export default function HomeScreen() {
 
   // Handle accepting a ride
   const handleAcceptRide = async (ride: any) => {
-    if (!user) return;
+    console.log('--- ACCEPT BUTTON CLICKED ---');
+    console.log('RIDE ID:', ride.id);
+    if (!user) {
+      console.warn('[ACCEPT] No user found in AuthContext');
+      return;
+    }
+    console.log('USER ID (Auth):', user.id);
+    console.log('DRIVER ID (DB Primary Key):', driverId);
     setAcceptingRideId(ride.id);
 
+    // Switch to using user.id by default, as the foreign key error suggests
+    // it points to auth.users (the Auth ID) rather than the drivers table primary key.
+    const driverIdentifier = user.id;
+
+    console.log('[ACCEPT] Attempting to accept ride:', ride.id);
+    console.log('[ACCEPT] Using Auth ID as driver_id:', driverIdentifier);
+
     try {
-      const { error } = await supabase
+      console.log('[ACCEPT] Updating Supabase...');
+      const { data, error } = await supabase
         .from('rides')
         .update({
           status: 'accepted',
-          driver_id: user.id,
+          driver_id: driverIdentifier,
         })
-        .eq('id', ride.id);
+        .eq('id', ride.id)
+        .select();
+
+      console.log('[ACCEPT] Supabase response data:', data);
 
       if (error) {
         console.error('[ACCEPT] Error accepting ride:', error.message);
         setAcceptingRideId(null);
         return;
+      }
+
+      if (!data || data.length === 0) {
+        console.warn('[ACCEPT] Update succeeded but no rows were affected. Is the ride ID correct?');
       }
 
       // Dismiss the ride request modal
