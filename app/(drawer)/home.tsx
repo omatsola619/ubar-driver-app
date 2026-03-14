@@ -3,15 +3,34 @@ import BottomSheet, { BottomSheetView } from '@gorhom/bottom-sheet';
 import { DrawerActions, useNavigation } from '@react-navigation/native';
 import * as Location from 'expo-location';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Dimensions, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/context/AuthContext';
-import { getDistances } from '@/lib/google-maps';
+import { getDistances, reverseGeocode } from '@/lib/google-maps';
 import { supabase } from '@/lib/supabase';
+
+const GOOGLE_MAPS_APIKEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_APIKEY;
+
+interface LatLng {
+  latitude: number;
+  longitude: number;
+}
+
+interface AcceptedRide {
+  id: string;
+  rider_id: string;
+  pickup_lat: number;
+  pickup_lng: number;
+  destination_lat: number;
+  destination_lng: number;
+  price?: number;
+  distance?: string;
+  resolvedPickupAddress?: string;
+}
 
 export default function HomeScreen() {
   const { user, session } = useAuth();
@@ -21,19 +40,29 @@ export default function HomeScreen() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [nearbyRides, setNearbyRides] = useState<any[]>([]);
   const [isModalVisible, setIsModalVisible] = useState(false);
+  const [acceptingRideId, setAcceptingRideId] = useState<string | null>(null);
+  const [decliningRideId, setDecliningRideId] = useState<string | null>(null);
+
+  // Accepted ride state
+  const [acceptedRide, setAcceptedRide] = useState<AcceptedRide | null>(null);
+  const [riderName, setRiderName] = useState<string | null>(null);
+  const [riderPhone, setRiderPhone] = useState<string | null>(null);
+  const [routeCoords, setRouteCoords] = useState<LatLng[]>([]);
+  const [pickupEta, setPickupEta] = useState<string | null>(null);
+  const [pickupDistance, setPickupDistance] = useState<string | null>(null);
+
   const mapRef = useRef<MapView>(null);
   const bottomSheetRef = useRef<BottomSheet>(null);
+  const riderSheetRef = useRef<BottomSheet>(null);
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const animatedPosition = useSharedValue(0);
   const screenHeight = Dimensions.get('window').height;
 
   const animatedButtonStyle = useAnimatedStyle(() => {
-    // animatedPosition is the position from the top of the screen
-    // We want to calculate the offset from the bottom
     const marginBottom = Math.max(0, screenHeight - animatedPosition.value - 20);
     return {
-      bottom: marginBottom + 140, // 140 is the original bottom offset
+      bottom: marginBottom + 140,
     };
   });
 
@@ -108,7 +137,6 @@ export default function HomeScreen() {
     fetchInitialStatus();
   }, [user]);
 
-  // Update Supabase with driver's current position and status
   const updateDriverStatus = async (online: boolean) => {
     if (!user || !location) return;
 
@@ -120,13 +148,11 @@ export default function HomeScreen() {
       updated_at: new Date().toISOString(),
     };
 
-    // Try to insert first (new driver). If row already exists, update it.
     const { error: insertError } = await supabase
       .from('drivers')
       .insert(payload);
 
     if (insertError) {
-      // Row already exists — update instead
       const { error: updateError } = await supabase
         .from('drivers')
         .update(payload)
@@ -166,17 +192,12 @@ export default function HomeScreen() {
     let subscription: any = null;
     let driverChannel: any = null;
 
-    console.log('[RIDES] useEffect running — isOnline:', isOnline);
-
     const fetchRides = async () => {
       if (!isOnline || !location) {
         setNearbyRides([]);
         setIsModalVisible(false);
         return;
       }
-
-      console.log('[RIDES] Fetching rides with status=searching...');
-      console.log('[RIDES] Driver location:', location.coords.latitude, location.coords.longitude);
 
       const { data: ridesData, error } = await supabase
         .from('rides')
@@ -188,13 +209,6 @@ export default function HomeScreen() {
         return;
       }
 
-      console.log(`[RIDES] Total "searching" rides from Supabase: ${ridesData?.length ?? 0}`);
-      if (ridesData) {
-        ridesData.forEach((r: any, i: number) => {
-          console.log(`[RIDES] Ride ${i + 1}:`, r.id, '| pickup:', r.pickup_lat, r.pickup_lng, '| status:', r.status);
-        });
-      }
-
       if (ridesData && ridesData.length > 0) {
         const destinations = ridesData.map((r: any) => ({ lat: r.pickup_lat, lng: r.pickup_lng }));
         const distances = await getDistances(
@@ -202,31 +216,29 @@ export default function HomeScreen() {
           destinations
         );
 
-        console.log('[RIDES] Distances from Google API (meters):', distances);
+        const geocodedRides = await Promise.all(
+          ridesData.map(async (ride: any, index: number) => {
+            const [pickupAddress, destinationAddress] = await Promise.all([
+              reverseGeocode(ride.pickup_lat, ride.pickup_lng),
+              reverseGeocode(ride.destination_lat, ride.destination_lng),
+            ]);
+            return {
+              ...ride,
+              resolvedPickupAddress: pickupAddress,
+              resolvedDestinationAddress: destinationAddress,
+              distanceInMeters: distances[index],
+              distanceFromDriver: distances[index] >= 0
+                ? `${(distances[index] / 1000).toFixed(1)} km`
+                : 'N/A',
+            };
+          })
+        );
 
-        const withDistances = ridesData.map((ride: any, index: number) => ({
-          ...ride,
-          distanceInMeters: distances[index],
-          distanceText: distances[index] >= 0 ? `${(distances[index] / 1000).toFixed(1)} km` : 'N/A'
-        }));
-
-        console.log('[RIDES] All rides with distances:', withDistances.map((r: any) => ({
-          id: r.id,
-          distance: r.distanceText,
-          distanceInMeters: r.distanceInMeters,
-          status: r.status,
-        })));
-
-        // Show rides within 3-5km (if none, show all within 5km so we can confirm visibility)
-        const nearby = withDistances.filter((ride: any) => ride.distanceInMeters >= 0 && ride.distanceInMeters <= 5000);
-
-        console.log(`[RIDES] Rides within 5km: ${nearby.length}`);
-        console.log('[RIDES] Setting isModalVisible to:', nearby.length > 0);
+        const nearby = geocodedRides.filter((ride: any) => ride.distanceInMeters >= 0 && ride.distanceInMeters <= 5000);
 
         setNearbyRides(nearby);
-        setIsModalVisible(nearby.length > 0);
+        setIsModalVisible(nearby.length > 0 && !acceptedRide);
       } else {
-        console.log('[RIDES] No searching rides found.');
         setNearbyRides([]);
         setIsModalVisible(false);
       }
@@ -236,27 +248,35 @@ export default function HomeScreen() {
       supabase.realtime.setAuth(session.access_token);
       fetchRides();
 
-      // Subscribe to driver-specific private channel
       driverChannel = supabase
         .channel(`topic:drivers:${user?.id}`)
-        .on('broadcast', { event: 'new-ride' }, (payload) => {
-          console.log('Received new ride broadcast:', payload);
-          fetchRides();
-        })
+        .on('broadcast', { event: 'new-ride' }, () => { fetchRides(); })
         .subscribe();
 
-      // Real-time subscription to ride table changes
       subscription = supabase
         .channel('rides-channel')
         .on(
           'postgres_changes' as any,
           { event: '*', table: 'rides' as any, schema: 'public' },
-          () => { fetchRides(); }
+          (payload: any) => {
+            // If a ride that was being shown gets cancelled by the rider, remove it immediately
+            if (
+              payload.eventType === 'UPDATE' &&
+              payload.new?.status === 'cancelled'
+            ) {
+              const cancelledId = payload.new?.id;
+              setNearbyRides((prev) => {
+                const updated = prev.filter((r) => r.id !== cancelledId);
+                if (updated.length === 0) setIsModalVisible(false);
+                return updated;
+              });
+            } else {
+              fetchRides();
+            }
+          }
         )
         .subscribe();
     } else {
-      // Driver is offline — clear rides and stop listening
-      console.log('[RIDES] Driver offline — clearing rides and unsubscribing.');
       setNearbyRides([]);
       setIsModalVisible(false);
     }
@@ -267,15 +287,192 @@ export default function HomeScreen() {
     };
   }, [isOnline, location?.coords.latitude, location?.coords.longitude, session?.access_token]);
 
-
   // Collapse bottom sheet when ride cards are showing, restore when gone
   useEffect(() => {
     if (nearbyRides.length > 0 && isModalVisible) {
       bottomSheetRef.current?.collapse();
-    } else {
+    } else if (!acceptedRide) {
       bottomSheetRef.current?.snapToIndex(0);
     }
   }, [nearbyRides.length, isModalVisible]);
+
+  // Fetch route from driver location to pickup
+  const fetchRoute = async (driverLat: number, driverLng: number, pickupLat: number, pickupLng: number) => {
+    try {
+      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${driverLat},${driverLng}&destination=${pickupLat},${pickupLng}&key=${GOOGLE_MAPS_APIKEY}`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.status === 'OK' && data.routes.length > 0) {
+        const leg = data.routes[0].legs[0];
+        setPickupEta(leg.duration.text);
+        setPickupDistance(leg.distance.text);
+
+        // Decode polyline points
+        const points = decodePolyline(data.routes[0].overview_polyline.points);
+        setRouteCoords(points);
+
+        // Fit map to show route
+        if (mapRef.current && points.length > 0) {
+          mapRef.current.fitToCoordinates(points, {
+            edgePadding: { top: 120, right: 60, bottom: 320, left: 60 },
+            animated: true,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[ROUTE] Error fetching directions:', err);
+    }
+  };
+
+  // Decode Google encoded polyline
+  const decodePolyline = (encoded: string): LatLng[] => {
+    const poly: LatLng[] = [];
+    let index = 0;
+    let lat = 0;
+    let lng = 0;
+
+    while (index < encoded.length) {
+      let b: number;
+      let shift = 0;
+      let result = 0;
+      do {
+        b = encoded.charCodeAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+      const dlat = result & 1 ? ~(result >> 1) : result >> 1;
+      lat += dlat;
+
+      shift = 0;
+      result = 0;
+      do {
+        b = encoded.charCodeAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+      const dlng = result & 1 ? ~(result >> 1) : result >> 1;
+      lng += dlng;
+
+      poly.push({ latitude: lat / 1e5, longitude: lng / 1e5 });
+    }
+    return poly;
+  };
+
+  // Fetch rider profile info
+  const fetchRiderProfile = async (riderId: string) => {
+    try {
+      // Try profiles table first
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('full_name, phone')
+        .eq('id', riderId)
+        .single();
+
+      if (!error && data) {
+        setRiderName(data.full_name || 'Rider');
+        setRiderPhone(data.phone || null);
+        return;
+      }
+
+      // Fallback: try users table
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('full_name, phone')
+        .eq('id', riderId)
+        .single();
+
+      if (!userError && userData) {
+        setRiderName(userData.full_name || 'Rider');
+        setRiderPhone(userData.phone || null);
+      } else {
+        setRiderName('Rider');
+      }
+    } catch {
+      setRiderName('Rider');
+    }
+  };
+
+  // Handle declining a ride → set status to 'cancelled'
+  const handleDeclineRide = async (rideId: string) => {
+    setDecliningRideId(rideId);
+    try {
+      await supabase
+        .from('rides')
+        .update({ status: 'cancelled' })
+        .eq('id', rideId);
+
+      // Remove from local list immediately
+      setNearbyRides((prev) => {
+        const updated = prev.filter((r) => r.id !== rideId);
+        if (updated.length === 0) setIsModalVisible(false);
+        return updated;
+      });
+    } catch (err) {
+      console.error('[DECLINE] Error declining ride:', err);
+    } finally {
+      setDecliningRideId(null);
+    }
+  };
+
+  // Handle accepting a ride
+  const handleAcceptRide = async (ride: any) => {
+    if (!user) return;
+    setAcceptingRideId(ride.id);
+
+    try {
+      const { error } = await supabase
+        .from('rides')
+        .update({
+          status: 'accepted',
+          driver_id: user.id,
+        })
+        .eq('id', ride.id);
+
+      if (error) {
+        console.error('[ACCEPT] Error accepting ride:', error.message);
+        setAcceptingRideId(null);
+        return;
+      }
+
+      // Dismiss the ride request modal
+      setIsModalVisible(false);
+      setNearbyRides([]);
+      setAcceptingRideId(null);
+
+      // Store accepted ride info
+      setAcceptedRide({
+        id: ride.id,
+        rider_id: ride.rider_id,
+        pickup_lat: ride.pickup_lat,
+        pickup_lng: ride.pickup_lng,
+        destination_lat: ride.destination_lat,
+        destination_lng: ride.destination_lng,
+        price: ride.price,
+        distance: ride.distance,
+        resolvedPickupAddress: ride.resolvedPickupAddress,
+      });
+
+      // Fetch rider profile
+      await fetchRiderProfile(ride.rider_id);
+
+      // Draw route from driver to pickup
+      if (location) {
+        await fetchRoute(
+          location.coords.latitude,
+          location.coords.longitude,
+          ride.pickup_lat,
+          ride.pickup_lng
+        );
+      }
+
+      // Snap rider bottom sheet up
+      riderSheetRef.current?.snapToIndex(0);
+    } catch (err) {
+      console.error('[ACCEPT] Unexpected error:', err);
+      setAcceptingRideId(null);
+    }
+  };
 
   const centerMap = () => {
     if (location && mapRef.current) {
@@ -332,7 +529,8 @@ export default function HomeScreen() {
           </Marker>
         )}
 
-        {nearbyRides.map((ride) => (
+        {/* Nearby ride pickup markers (when no ride accepted yet) */}
+        {!acceptedRide && nearbyRides.map((ride) => (
           <Marker
             key={ride.id}
             coordinate={{
@@ -347,28 +545,70 @@ export default function HomeScreen() {
             </View>
           </Marker>
         ))}
+
+        {/* Accepted ride: pickup marker */}
+        {acceptedRide && (
+          <Marker
+            coordinate={{
+              latitude: acceptedRide.pickup_lat,
+              longitude: acceptedRide.pickup_lng,
+            }}
+            anchor={{ x: 0.5, y: 1 }}
+          >
+            <View style={styles.pickupMarker}>
+              <Ionicons name="person" size={16} color="white" />
+            </View>
+          </Marker>
+        )}
+
+        {/* Route polyline: driver → pickup */}
+        {routeCoords.length > 0 && (
+          <Polyline
+            coordinates={routeCoords}
+            strokeColor="#111111"
+            strokeWidth={5}
+            lineDashPattern={[0]}
+          />
+        )}
       </MapView>
 
-      {/* Top UI Elements */}
-      <View style={[styles.topContainer, { top: insets.top > 0 ? insets.top + 10 : 40 }]}>
-        <View style={styles.menuContainer}>
-          <TouchableOpacity style={styles.roundButton} onPress={() => navigation.dispatch(DrawerActions.openDrawer())}>
-            <Ionicons name="menu" size={24} color="black" />
-          </TouchableOpacity>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>57</Text>
+      {/* Pickup address banner (when ride accepted) */}
+      {acceptedRide && (
+        <View style={[styles.pickupBanner, { top: insets.top > 0 ? insets.top + 10 : 50 }]}>
+          <Ionicons name="location" size={20} color="white" style={{ marginRight: 8 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.pickupBannerTitle} numberOfLines={1}>
+              Pickup
+            </Text>
+            <Text style={styles.pickupBannerAddress} numberOfLines={2}>
+              {acceptedRide.resolvedPickupAddress || `${acceptedRide.pickup_lat.toFixed(4)}, ${acceptedRide.pickup_lng.toFixed(4)}`}
+            </Text>
           </View>
         </View>
+      )}
 
-        <TouchableOpacity style={styles.earningsPill}>
-          <Text style={styles.currency}>$</Text>
-          <Text style={styles.earningsText}>93.66</Text>
-        </TouchableOpacity>
+      {/* Top UI Elements (hidden during accepted ride) */}
+      {!acceptedRide && (
+        <View style={[styles.topContainer, { top: insets.top > 0 ? insets.top + 10 : 40 }]}>
+          <View style={styles.menuContainer}>
+            <TouchableOpacity style={styles.roundButton} onPress={() => navigation.dispatch(DrawerActions.openDrawer())}>
+              <Ionicons name="menu" size={24} color="black" />
+            </TouchableOpacity>
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>57</Text>
+            </View>
+          </View>
 
-        <TouchableOpacity style={styles.roundButton}>
-          <Ionicons name="search" size={24} color="black" />
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity style={styles.earningsPill}>
+            <Text style={styles.currency}>$</Text>
+            <Text style={styles.earningsText}>93.66</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.roundButton}>
+            <Ionicons name="search" size={24} color="black" />
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Center Left UI Element */}
       <Animated.View style={[styles.leftContainer, animatedButtonStyle]}>
@@ -404,76 +644,154 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {/* Bottom Sheet */}
-      <BottomSheet
-        ref={bottomSheetRef}
-        index={0}
-        snapPoints={[isOnline ? (300 + (insets.bottom || 20)) : (100 + (insets.bottom || 20)), '50%']}
-        enableDynamicSizing={false}
-        handleIndicatorStyle={{ backgroundColor: '#e0e0e0', width: 40 }}
-        backgroundStyle={styles.bottomSheetBackground}
-        animatedPosition={animatedPosition}
-        enableHandlePanningGesture={isOnline}
-        enableContentPanningGesture={isOnline}
-      >
-        <BottomSheetView style={[styles.bottomSheetContent, { paddingBottom: insets.bottom || 20 }]}>
-          <View style={styles.sheetHeader}>
-            <TouchableOpacity>
-              <Ionicons name="options-outline" size={28} color="black" />
-            </TouchableOpacity>
-            <Text style={styles.offlineText}>{isOnline ? "You're online" : "You're offline"}</Text>
-            <TouchableOpacity>
-              <Ionicons name="list-outline" size={28} color="black" />
-            </TouchableOpacity>
-          </View>
-
-          {isOnline && (
-            <View style={styles.onlineStatsContainer}>
-              <View style={styles.statsRow}>
-                <View style={styles.leftStats}>
-                  <View style={styles.statusDot} />
-                  <Text style={styles.statsTitle}>Unlock Gold</Text>
-                </View>
-                <View style={styles.rightStats}>
-                  <MaterialCommunityIcons
-                    name="diamond"
-                    size={22}
-                    color="#3b82f6"
-                    style={styles.statsIcon}
-                  />
-                  <Text style={styles.pointsText}>185 / 300 pts</Text>
-                </View>
-              </View>
-
-              <View style={styles.progressSection}>
-                <View style={styles.statDetail}>
-                  <Text style={styles.statPercent}>71%</Text>
-                  <Ionicons name="person" size={12} color="#666" />
-                </View>
-                <View style={styles.statDetail}>
-                  <Text style={styles.statPercent}>2%</Text>
-                  <Ionicons name="speedometer-outline" size={12} color="#666" />
-                </View>
-              </View>
-
-              <TouchableOpacity
-                style={[styles.stopButton, loading && { opacity: 0.7 }]}
-                onPress={toggleOnline}
-                disabled={loading}
-              >
-                {loading ? (
-                  <ActivityIndicator color="white" size="small" />
-                ) : (
-                  <Text style={styles.stopButtonText}>STOP</Text>
-                )}
+      {/* Bottom Sheet (driver status — hidden when ride accepted) */}
+      {!acceptedRide && (
+        <BottomSheet
+          ref={bottomSheetRef}
+          index={0}
+          snapPoints={[isOnline ? (300 + (insets.bottom || 20)) : (100 + (insets.bottom || 20)), '50%']}
+          enableDynamicSizing={false}
+          handleIndicatorStyle={{ backgroundColor: '#e0e0e0', width: 40 }}
+          backgroundStyle={styles.bottomSheetBackground}
+          animatedPosition={animatedPosition}
+          enableHandlePanningGesture={isOnline}
+          enableContentPanningGesture={isOnline}
+        >
+          <BottomSheetView style={[styles.bottomSheetContent, { paddingBottom: insets.bottom || 20 }]}>
+            <View style={styles.sheetHeader}>
+              <TouchableOpacity>
+                <Ionicons name="options-outline" size={28} color="black" />
+              </TouchableOpacity>
+              <Text style={styles.offlineText}>{isOnline ? "You're online" : "You're offline"}</Text>
+              <TouchableOpacity>
+                <Ionicons name="list-outline" size={28} color="black" />
               </TouchableOpacity>
             </View>
-          )}
-        </BottomSheetView>
-      </BottomSheet>
+
+            {isOnline && (
+              <View style={styles.onlineStatsContainer}>
+                <View style={styles.statsRow}>
+                  <View style={styles.leftStats}>
+                    <View style={styles.statusDot} />
+                    <Text style={styles.statsTitle}>Unlock Gold</Text>
+                  </View>
+                  <View style={styles.rightStats}>
+                    <MaterialCommunityIcons
+                      name="diamond"
+                      size={22}
+                      color="#3b82f6"
+                      style={styles.statsIcon}
+                    />
+                    <Text style={styles.pointsText}>185 / 300 pts</Text>
+                  </View>
+                </View>
+
+                <View style={styles.progressSection}>
+                  <View style={styles.statDetail}>
+                    <Text style={styles.statPercent}>71%</Text>
+                    <Ionicons name="person" size={12} color="#666" />
+                  </View>
+                  <View style={styles.statDetail}>
+                    <Text style={styles.statPercent}>2%</Text>
+                    <Ionicons name="speedometer-outline" size={12} color="#666" />
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.stopButton, loading && { opacity: 0.7 }]}
+                  onPress={toggleOnline}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="white" size="small" />
+                  ) : (
+                    <Text style={styles.stopButtonText}>STOP</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+          </BottomSheetView>
+        </BottomSheet>
+      )}
+
+      {/* Rider Bottom Sheet (shown after accepting a ride) */}
+      {acceptedRide && (
+        <BottomSheet
+          ref={riderSheetRef}
+          index={0}
+          snapPoints={[220 + (insets.bottom || 20)]}
+          enableDynamicSizing={false}
+          handleIndicatorStyle={{ backgroundColor: '#e0e0e0', width: 40 }}
+          backgroundStyle={styles.bottomSheetBackground}
+          enableHandlePanningGesture={false}
+          enableContentPanningGesture={false}
+        >
+          <BottomSheetView style={[styles.riderSheetContent, { paddingBottom: insets.bottom || 20 }]}>
+            {/* ETA row */}
+            <View style={styles.riderEtaRow}>
+              <TouchableOpacity style={styles.etaFilterBtn}>
+                <Ionicons name="options-outline" size={20} color="#555" />
+              </TouchableOpacity>
+              <View style={styles.etaCenter}>
+                {pickupEta ? (
+                  <Text style={styles.etaText}>{pickupEta}</Text>
+                ) : (
+                  <ActivityIndicator size="small" color="#333" />
+                )}
+                {pickupDistance && (
+                  <>
+                    <View style={styles.etaDot} />
+                    <Ionicons name="leaf" size={14} color="#22c55e" />
+                    <Text style={styles.etaDistanceText}>{pickupDistance}</Text>
+                  </>
+                )}
+              </View>
+              <TouchableOpacity style={styles.etaFilterBtn}>
+                <Ionicons name="list-outline" size={20} color="#555" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Divider */}
+            <View style={styles.divider} />
+
+            {/* Rider info row */}
+            <View style={styles.riderInfoRow}>
+              {/* Call button */}
+              <TouchableOpacity
+                style={styles.callButton}
+                onPress={() => {
+                  if (riderPhone) {
+                    Linking.openURL(`tel:${riderPhone}`);
+                  }
+                }}
+              >
+                <Ionicons name="call" size={22} color="white" />
+              </TouchableOpacity>
+
+              {/* Rider name */}
+              <Text style={styles.riderNameText}>
+                {riderName ?? 'Loading...'}
+              </Text>
+
+              {/* Rider avatar */}
+              <View style={styles.riderAvatar}>
+                <Ionicons name="person" size={26} color="#555" />
+              </View>
+            </View>
+
+            {/* Start button */}
+            <TouchableOpacity style={styles.startButton}>
+              <View style={styles.startButtonArrow}>
+                <Ionicons name="arrow-forward" size={22} color="white" />
+              </View>
+              <Text style={styles.startButtonText}>Start UberX</Text>
+            </TouchableOpacity>
+          </BottomSheetView>
+        </BottomSheet>
+      )}
 
       {/* Nearby Ride Request Cards */}
-      {isOnline && nearbyRides.length > 0 && isModalVisible && (
+      {isOnline && nearbyRides.length > 0 && isModalVisible && !acceptedRide && (
         <View style={styles.modalOverlay}>
           <Animated.FlatList
             data={nearbyRides}
@@ -495,15 +813,20 @@ export default function HomeScreen() {
                   </TouchableOpacity>
                 </View>
 
-                {/* Fare */}
+                {/* Fare in Naira */}
                 <Text style={styles.fareText}>
-                  {item.fare ? `$${Number(item.fare).toFixed(2)}` : 'Calculating...'}
+                  {item.price ? `₦${Number(item.price).toLocaleString()}` : 'Calculating...'}
                 </Text>
 
                 {/* Rating */}
                 <View style={styles.ratingRow}>
                   <Ionicons name="star" size={14} color="#f59e0b" />
                   <Text style={styles.ratingText}>{item.rating ?? '4.80'}</Text>
+                  {item.distance ? (
+                    <Text style={[styles.ratingText, { marginLeft: 12, color: '#3b82f6' }]}>
+                      {item.distance}
+                    </Text>
+                  ) : null}
                 </View>
 
                 {/* Divider */}
@@ -516,9 +839,9 @@ export default function HomeScreen() {
                     <View style={styles.tripLine} />
                   </View>
                   <View style={styles.tripTextWrapper}>
-                    <Text style={styles.tripMeta}>{item.distanceText} away</Text>
-                    <Text style={styles.tripAddress} numberOfLines={1}>
-                      {item.pickup_address || `${item.pickup_lat?.toFixed(4)}, ${item.pickup_lng?.toFixed(4)}`}
+                    <Text style={styles.tripMeta}>{item.distanceFromDriver} away</Text>
+                    <Text style={styles.tripAddress} numberOfLines={2}>
+                      {item.resolvedPickupAddress || item.pickup_address || `${item.pickup_lat?.toFixed(4)}, ${item.pickup_lng?.toFixed(4)}`}
                     </Text>
                   </View>
                 </View>
@@ -530,18 +853,42 @@ export default function HomeScreen() {
                   </View>
                   <View style={styles.tripTextWrapper}>
                     <Text style={styles.tripMeta}>
-                      {item.duration ? `${item.duration} trip` : 'Trip'}
+                      {item.distance ? `${item.distance} trip` : 'Trip'}
                     </Text>
-                    <Text style={styles.tripAddress} numberOfLines={1}>
-                      {item.dropoff_address || `${item.dropoff_lat?.toFixed(4)}, ${item.dropoff_lng?.toFixed(4)}`}
+                    <Text style={styles.tripAddress} numberOfLines={2}>
+                      {item.resolvedDestinationAddress || item.dropoff_address || `${item.destination_lat?.toFixed(4)}, ${item.destination_lng?.toFixed(4)}`}
                     </Text>
                   </View>
                 </View>
 
-                {/* Accept Button */}
-                <TouchableOpacity style={styles.acceptButton}>
-                  <Text style={styles.acceptText}>Accept</Text>
-                </TouchableOpacity>
+                {/* Action Buttons */}
+                <View style={styles.actionButtons}>
+                  {/* Decline */}
+                  <TouchableOpacity
+                    style={[styles.declineButton, decliningRideId === item.id && styles.actionButtonLoading]}
+                    onPress={() => handleDeclineRide(item.id)}
+                    disabled={acceptingRideId !== null || decliningRideId !== null}
+                  >
+                    {decliningRideId === item.id ? (
+                      <ActivityIndicator color="#ef4444" size="small" />
+                    ) : (
+                      <Text style={styles.declineText}>Decline</Text>
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Accept */}
+                  <TouchableOpacity
+                    style={[styles.acceptButton, acceptingRideId === item.id && styles.acceptButtonLoading]}
+                    onPress={() => handleAcceptRide(item)}
+                    disabled={acceptingRideId !== null || decliningRideId !== null}
+                  >
+                    {acceptingRideId === item.id ? (
+                      <ActivityIndicator color="white" size="small" />
+                    ) : (
+                      <Text style={styles.acceptText}>Accept</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
           />
@@ -578,6 +925,46 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 5,
+  },
+  pickupMarker: {
+    backgroundColor: '#3b82f6',
+    padding: 8,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: 'white',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 6,
+  },
+  pickupBanner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    backgroundColor: '#111',
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    zIndex: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  pickupBannerTitle: {
+    color: '#aaa',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  pickupBannerAddress: {
+    color: 'white',
+    fontSize: 15,
+    fontWeight: '700',
   },
   topContainer: {
     position: 'absolute',
@@ -692,14 +1079,6 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 8,
   },
-  stopButtonOuter: {
-    backgroundColor: 'rgba(239, 68, 68, 0.4)',
-    borderColor: 'rgba(239, 68, 68, 0.6)',
-  },
-  stopButtonInner: {
-    backgroundColor: '#ef4444',
-    shadowColor: '#ef4444',
-  },
   goButtonText: {
     color: 'white',
     fontSize: 24,
@@ -798,6 +1177,109 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
   },
+  // Rider bottom sheet styles
+  riderSheetContent: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+  },
+  riderEtaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  etaFilterBtn: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  etaCenter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+    justifyContent: 'center',
+  },
+  etaText: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#111',
+  },
+  etaDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#999',
+  },
+  etaDistanceText: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#333',
+  },
+  riderInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  callButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#22c55e',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#22c55e',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+  riderNameText: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#111',
+    flex: 1,
+    textAlign: 'center',
+  },
+  riderAvatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#ddd',
+  },
+  startButton: {
+    backgroundColor: '#111',
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+  },
+  startButtonArrow: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: '#333',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  startButtonText: {
+    color: 'white',
+    fontSize: 17,
+    fontWeight: '700',
+    flex: 1,
+    textAlign: 'center',
+  },
+  // Ride request modal
   modalOverlay: {
     position: 'absolute',
     bottom: 0,
@@ -918,16 +1400,40 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   acceptButton: {
+    flex: 1,
     backgroundColor: '#3b82f6',
     borderRadius: 10,
     paddingVertical: 16,
-    alignItems: 'center',
-    marginTop: 6,
+    alignItems: 'center' as const,
+  },
+  acceptButtonLoading: {
+    opacity: 0.75,
   },
   acceptText: {
     color: 'white',
     fontSize: 17,
     fontWeight: 'bold',
+  },
+  actionButtons: {
+    flexDirection: 'row' as const,
+    gap: 10,
+    marginTop: 6,
+  },
+  declineButton: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: '#ef4444',
+    borderRadius: 10,
+    paddingVertical: 16,
+    alignItems: 'center' as const,
+  },
+  actionButtonLoading: {
+    opacity: 0.65,
+  },
+  declineText: {
+    color: '#ef4444',
+    fontSize: 17,
+    fontWeight: 'bold' as const,
   },
   rideMarker: {
     backgroundColor: '#3b82f6',

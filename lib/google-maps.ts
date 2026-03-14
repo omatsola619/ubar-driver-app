@@ -65,3 +65,18 @@ export const getDistances = async (
         return destinations.map((dest) => Math.round(haversineDistance(origin, dest)));
     }
 };
+
+// Reverse geocoding: convert lat/lng to a human-readable address
+export const reverseGeocode = async (lat: number, lng: number): Promise<string> => {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${GOOGLE_MAPS_APIKEY}`;
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+        if (data.status === 'OK' && data.results.length > 0) {
+            return data.results[0].formatted_address;
+        }
+        return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    } catch {
+        return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    }
+};
